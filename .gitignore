@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build outputs & compiler caches
+.next/
+dist/
+*.tsbuildinfo
+
+# Local runtime & environment secrets (NEVER commit)
+.runtime/
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+frontend/.env*
+
+# User uploads, cached map tiles & transient QA artifacts
+uploads/*
+backend/uploads/*
+qa/*.png
+qa/report-readonly-evidence.json
+
+# Logs & OS metadata
+*.log
+.DS_Store
+Thumbs.db
