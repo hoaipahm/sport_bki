@@ -1,0 +1,11 @@
+﻿const assert = require('node:assert/strict');
+require('../backend/node_modules/ts-node/register');
+const { resolvePrice, vietnamDate } = require('../shared/booking');
+const rules=[{court_type:'5',is_weekend:true,start_time:'06:00',end_time:'23:00',price_per_hour:'450000'},{court_type:'5',start_time:'17:00',end_time:'21:00',price_per_hour:'450000'},{court_type:'5',start_time:'06:00',end_time:'17:00',price_per_hour:'300000'}];
+assert.equal(resolvePrice(rules,'a','5','2026-11-18','16:30'),300000);
+assert.equal(resolvePrice(rules,'a','5','2026-11-18','17:00'),450000);
+assert.equal(resolvePrice(rules,'a','5','2026-11-21','07:00'),450000);
+assert.equal(resolvePrice(rules,'a','7','2026-11-18','07:00'),null);
+assert.equal(resolvePrice(rules,'a','5','2026-11-18','23:00'),null);
+assert.equal(vietnamDate(new Date('2026-11-17T18:00:00Z')),'2026-11-18');
+console.log('6/6 pricing and timezone checks passed');

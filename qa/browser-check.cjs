@@ -1,0 +1,20 @@
+const { chromium } = require('../frontend/node_modules/playwright');
+(async () => {
+ const browser = await chromium.launch({ headless: true });
+ const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+ const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto('http://localhost:3000');
+ await page.waitForTimeout(1500);
+ await page.screenshot({path:'qa/customer-desktop.png',fullPage:true});
+ console.log('desktop',await page.locator('h1').innerText(), await page.locator('#venues').innerText());
+ console.log('font',await page.locator('h1').evaluate(e=>getComputedStyle(e).fontFamily));
+ await page.setViewportSize({width:360,height:800});
+ await page.screenshot({path:'qa/customer-mobile.png',fullPage:true});
+ console.log('mobile overflow',await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth));
+ await page.getByTitle('Đổi ngôn ngữ').click();
+ console.log('locale',await page.locator('html').getAttribute('lang'));
+ await page.screenshot({path:'qa/customer-mobile-en.png',fullPage:true});
+ console.log('english overflow',await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth));
+ console.log('errors',errors);
+ await browser.close();
+})().catch(e=>{console.error(e);process.exit(1)});

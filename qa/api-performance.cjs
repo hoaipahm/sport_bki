@@ -1,0 +1,2 @@
+﻿const { performance }=require('node:perf_hooks');
+(async()=>{for(const path of ['/venues','/venues/b0000000-0000-0000-0000-000000000001/availability?date=2026-11-18']){let times=[];for(let i=0;i<20;i++){const start=performance.now();const r=await fetch('http://localhost:4000/api/customer/v1'+path);await r.json();times.push(performance.now()-start)}times.sort((a,b)=>a-b);console.log(path,'median',times[10].toFixed(1),'ms p95',times[18].toFixed(1),'ms')}})();

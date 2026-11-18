@@ -1,0 +1,10 @@
+﻿const assert=require('node:assert/strict');
+process.env.TS_NODE_PROJECT='backend/tsconfig.json';require('../backend/node_modules/ts-node/register');
+const {pool}=require('../backend/src/config/database');const {databaseScope}=require('../backend/src/config/database-scope');
+(async()=>{const tenant='a0000000-0000-0000-0000-000000000001';
+assert.equal((await pool.query('SELECT count(*)::int AS n FROM courts')).rows[0].n,0);
+await databaseScope.run({portal:'public'},async()=>{assert((await pool.query('SELECT count(*)::int AS n FROM courts')).rows[0].n>0);assert.equal((await pool.query('SELECT count(*)::int AS n FROM bookings')).rows[0].n,0);assert.equal((await pool.query('UPDATE courts SET name=name RETURNING id')).rowCount,0)});
+await databaseScope.run({portal:'admin',tenantId:tenant},async()=>{const c=await pool.connect();try{await c.query('BEGIN');assert((await c.query('UPDATE courts SET name=name WHERE tenant_id=$1 RETURNING id',[tenant])).rowCount>0);await c.query('ROLLBACK')}finally{c.release()}});
+await databaseScope.run({portal:'admin',tenantId:'00000000-0000-0000-0000-000000000099'},async()=>{assert.equal((await pool.query('SELECT count(*)::int AS n FROM courts')).rows[0].n,0);assert.equal((await pool.query('UPDATE courts SET name=name RETURNING id')).rowCount,0)});
+assert.equal((await pool.query('SELECT count(*)::int AS n FROM courts')).rows[0].n,0);
+console.log('PASS: no context denied; public reads only; tenant-scoped writes; wrong tenant denied; pooled context cleaned.');await pool.end()})().catch(async e=>{console.error(e.message);await pool.end();process.exitCode=1});
