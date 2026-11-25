@@ -48,7 +48,15 @@ export function signAccessToken(payload: TokenPayload): string {
 export function verifyToken(token: string, requiredPortal?: PortalType): TokenPayload {
   const decoded = jwt.verify(token, JWT_SECRET, {
     issuer: 'court-booking-auth',
+    algorithms: ['HS256'],
   }) as TokenPayload;
+
+  if (!decoded || typeof decoded !== 'object' ||
+      !['customer', 'staff', 'admin', 'platform'].includes(decoded.portal) ||
+      typeof decoded.userId !== 'string' || !decoded.userId ||
+      (decoded as any).aud !== decoded.portal) {
+    throw new Error('INVALID_TOKEN');
+  }
 
   if (requiredPortal && decoded.portal !== requiredPortal) {
     throw new Error('FORBIDDEN_PORTAL');
@@ -75,7 +83,7 @@ export async function comparePassword(password: string, hash: string): Promise<b
  * Generate 6-digit numeric OTP using CSPRNG (Section 16.4 & D-03)
  */
 export function generateNumericOtp(): string {
-  const number = crypto.randomInt(100000, 999999);
+  const number = crypto.randomInt(100000, 1000000);
   return number.toString();
 }
 
