@@ -579,7 +579,7 @@ export function OperatorProfilePanel({
             </button>
           </form>
 
-          {portal === 'admin' && (
+          {(portal === 'admin' || portal === 'platform') && (
             <div className="pt-4 border-t border-borderToken space-y-3">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs sm:text-sm font-bold text-textStrong flex items-center gap-1.5">
