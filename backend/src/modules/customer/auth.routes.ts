@@ -7,6 +7,7 @@ import { normalizeEmail, normalizePhoneNumber, hashPassword, comparePassword, ge
 import { authRateLimiter } from '../../common/security';
 import { isSmtpConfigured, dispatchQueuedEmail } from '../../common/email.service';
 import { t } from '../../../../shared/i18n';
+import { canPreviewLocalOtp } from '../../common/local-preview';
 
 export const customerAuthRouter = Router();
 type Purpose = 'REGISTER' | 'RESET_PASSWORD';
@@ -17,7 +18,7 @@ function deliveryMode(req: AuthenticatedRequest): 'test_mode' | 'smtp' {
   if (isSmtpConfigured() && process.env.AUTH_EMAIL_MODE !== 'local') {
     return 'smtp';
   }
-  if (process.env.NODE_ENV === 'production' && process.env.AUTH_EMAIL_MODE !== 'local') {
+  if (!canPreviewLocalOtp(req)) {
     throw new AuthFailure('EMAIL_UNAVAILABLE', 503);
   }
   return 'test_mode';
