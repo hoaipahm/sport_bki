@@ -38,6 +38,8 @@ export default function PlatformPage() {
   // Strictly empty login fields — never pre-fill Super Admin credentials
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [requires2fa, setRequires2fa] = useState(false);
+  const [twoFactorCode, setTwoFactorCode] = useState('');
   const [error, setError] = useState('');
 
   const [activeTab, setActiveTab] = useState<'TENANTS' | 'MEDIA' | 'SPORTS' | 'SMTP' | 'SUPPORT' | 'PROFILE'>('TENANTS');
@@ -192,16 +194,23 @@ export default function PlatformPage() {
     const res = await fetch(`${platformApi}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept-Language': language },
-      body: JSON.stringify({ email: email.trim(), password }),
+      body: JSON.stringify({ email: email.trim(), password, totp_code: twoFactorCode || undefined }),
     });
     const data = await res.json();
     if (!res.ok) {
+      if (data.requires_2fa) {
+        setRequires2fa(true);
+        setError(isEn ? 'Enter your authenticator code.' : 'Nhập mã từ ứng dụng xác thực.');
+        return;
+      }
       setError(data.message || 'Đăng nhập thất bại');
       return;
     }
     setToken(data.access_token);
     setAdmin(data.admin);
     setPassword('');
+    setTwoFactorCode('');
+    setRequires2fa(false);
     localStorage.setItem('court_platform_token', data.access_token);
     localStorage.setItem('court_platform_user', JSON.stringify(data.admin));
   };
@@ -593,6 +602,17 @@ export default function PlatformPage() {
                   required
                 />
               </div>
+              {requires2fa && (
+                <div>
+                  <label htmlFor="platform-totp" className="block text-xs font-semibold text-textBody mb-1.5">
+                    {isEn ? 'Authenticator code' : 'Mã ứng dụng xác thực'}
+                  </label>
+                  <input id="platform-totp" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}"
+                    maxLength={6} required value={twoFactorCode}
+                    onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, ''))}
+                    className="w-full min-h-[46px] px-4 bg-panel-2 border border-borderStrong rounded-token-md text-textStrong" />
+                </div>
+              )}
               <button
                 type="submit"
                 className="w-full min-h-[46px] bg-accent hover:bg-accent-hover text-textOnAccent font-bold rounded-token-full"
