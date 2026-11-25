@@ -1,10 +1,11 @@
 import { Router, Response } from 'express';
+import { generateSecret, generateURI, verifySync } from 'otplib';
 import { pool } from '../../config/database';
 import { databaseScope } from '../../config/database-scope';
 import { hashPassword, comparePassword, signAccessToken } from '../../common/jwt';
 import { AuthenticatedRequest, requirePortal, sendTranslatedError } from '../../common/auth.guard';
 import { recordAuditLog } from '../../common/audit';
-import { uploadRateLimiter } from '../../common/security';
+import { authRateLimiter, uploadRateLimiter } from '../../common/security';
 import {
   uploadMiddleware,
   optimizeAndSaveImage,
@@ -16,8 +17,8 @@ import { getActiveSmtpConfig, refreshSmtpSettingsCache, sendDirectSmtpTestEmail 
 
 export const platformRouter = Router();
 
-platformRouter.post('/auth/login', async (req: AuthenticatedRequest, res: Response) => {
-  const { email, password } = req.body;
+platformRouter.post('/auth/login', authRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
+  const { email, password, totp_code } = req.body;
   if (!email || !password) {
     return sendTranslatedError(req, res, 400, 'INVALID_CREDENTIALS');
   }
@@ -25,7 +26,7 @@ platformRouter.post('/auth/login', async (req: AuthenticatedRequest, res: Respon
   try {
     const adminRes = await databaseScope.run({ service: true }, () =>
       pool.query(
-        `SELECT id, email, full_name, avatar_url, password_hash, role, is_active, preferred_language, created_at
+        `SELECT id, email, full_name, avatar_url, password_hash, role, is_active, preferred_language, created_at, totp_enabled, totp_secret, auth_version
          FROM platform_admins WHERE LOWER(email) = $1 AND is_active = TRUE`,
         [String(email).trim().toLowerCase()]
       )
@@ -41,9 +42,17 @@ platformRouter.post('/auth/login', async (req: AuthenticatedRequest, res: Respon
       return sendTranslatedError(req, res, 401, 'INVALID_CREDENTIALS');
     }
 
+    if (admin.totp_enabled) {
+      if (!totp_code) return res.status(403).json({ error_code: 'TWO_FACTOR_REQUIRED', requires_2fa: true });
+      if (!/^\d{6}$/.test(String(totp_code).trim()) || !admin.totp_secret || !verifySync({ token: String(totp_code).trim(), secret: admin.totp_secret, epochTolerance: [30, 0] }).valid) {
+        return res.status(401).json({ error_code: 'INVALID_2FA_TOKEN', requires_2fa: true });
+      }
+    }
+
     const token = signAccessToken({
       userId: admin.id,
       portal: 'platform',
+      sessionVersion: admin.auth_version,
       role: 'SUPER_ADMIN',
       preferredLanguage: admin.preferred_language,
     });
@@ -134,11 +143,32 @@ platformRouter.post('/me/password', requirePortal('platform'), async (req: Authe
       return sendTranslatedError(req, res, 401, 'INVALID_CREDENTIALS');
     }
     const newHash = await hashPassword(new_password);
-    await pool.query(`UPDATE platform_admins SET password_hash = $1 WHERE id = $2`, [newHash, req.user!.userId]);
+    await pool.query(`UPDATE platform_admins SET password_hash = $1, auth_version = auth_version + 1 WHERE id = $2`, [newHash, req.user!.userId]);
     return res.json({ status: 'PASSWORD_CHANGED' });
   } catch (err: any) {
     return res.status(500).json({ error_code: 'INTERNAL_ERROR', message: err.message });
   }
+});
+
+platformRouter.post('/auth/2fa/setup', requirePortal('platform'), authRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const secret = generateSecret();
+    const result = await pool.query(`UPDATE platform_admins SET totp_secret = $1 WHERE id = $2 AND totp_enabled = FALSE RETURNING id`, [secret, req.user!.userId]);
+    if (!result.rowCount) return res.status(409).json({ error_code: 'TWO_FACTOR_ALREADY_ENABLED' });
+    return res.json({ secret, otpauth: generateURI({ secret, label: `platform-${req.user!.userId}`, issuer: 'SportsCourtBooking' }) });
+  } catch { return res.status(500).json({ error_code: 'INTERNAL_ERROR' }); }
+});
+
+platformRouter.post('/auth/2fa/verify', requirePortal('platform'), authRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const row = (await pool.query(`SELECT totp_secret FROM platform_admins WHERE id = $1`, [req.user!.userId])).rows[0];
+    if (!row?.totp_secret || !/^\d{6}$/.test(String(req.body.token || '')) ||
+        !verifySync({ token: String(req.body.token), secret: row.totp_secret, epochTolerance: [30, 0] }).valid) {
+      return res.status(400).json({ error_code: 'INVALID_2FA_TOKEN' });
+    }
+    await pool.query(`UPDATE platform_admins SET totp_enabled = TRUE WHERE id = $1`, [req.user!.userId]);
+    return res.json({ totp_enabled: true });
+  } catch { return res.status(500).json({ error_code: 'INTERNAL_ERROR' }); }
 });
 
 platformRouter.get('/tenants', requirePortal('platform'), async (_req: AuthenticatedRequest, res: Response) => {
