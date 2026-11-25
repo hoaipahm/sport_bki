@@ -1,4 +1,5 @@
-﻿const assert = require('node:assert/strict');
+process.env.TS_NODE_PROJECT = require('node:path').resolve(__dirname, '../backend/tsconfig.json');
+const assert = require('node:assert/strict');
 require('../backend/node_modules/ts-node/register');
 const { resolvePrice, vietnamDate } = require('../shared/booking');
 const rules=[{court_type:'5',is_weekend:true,start_time:'06:00',end_time:'23:00',price_per_hour:'450000'},{court_type:'5',start_time:'17:00',end_time:'21:00',price_per_hour:'450000'},{court_type:'5',start_time:'06:00',end_time:'17:00',price_per_hour:'300000'}];
