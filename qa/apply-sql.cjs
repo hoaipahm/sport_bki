@@ -12,9 +12,13 @@ async function main() {
   });
   try {
     await pool.query(`SET client_encoding = 'UTF8'`);
-    await pool.query(sql);
-    const sports = await pool.query(`SELECT code, name_i18n FROM sports ORDER BY created_at ASC`);
-    console.log(`Applied ${rel}. Active sports (${sports.rows.length}):`, sports.rows);
+    const client = await pool.connect();
+    try {
+      const additions = sql.match(/^ALTER TYPE \w+ ADD VALUE IF NOT EXISTS '[^']+';\r?$/gm) || [];
+      for (const statement of additions) await client.query(statement);
+      await client.query(sql.replace(/^ALTER TYPE \w+ ADD VALUE IF NOT EXISTS '[^']+';\r?$/gm, ''));
+    } finally { client.release(); }
+    console.log(`Applied ${rel}.`);
   } finally {
     await pool.end();
   }
