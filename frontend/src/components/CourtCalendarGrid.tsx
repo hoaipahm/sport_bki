@@ -650,8 +650,8 @@ export function CourtCalendarGrid({ venueId, venueName, onInitiateBooking }: Cou
                             {money(Math.round(dealQuoteOf(minute).baseHourly! / 2))}
                           </span>
                         )}
-                        <div className="flex items-baseline justify-between gap-1 min-w-0">
-                          <span className={`truncate text-xs sm:text-[13px] ${selected ? 'text-textOnAccent font-extrabold' : 'text-accent font-bold'}`}>
+                        <div className="flex flex-col items-start gap-1 min-w-0">
+                          <span data-slot-price className={`text-xs sm:text-[13px] break-words ${selected ? 'text-textOnAccent font-extrabold' : 'text-accent font-bold'}`}>
                             {money(Math.round(price / 2))}
                           </span>
                           <span className={`shrink-0 text-[11px] font-medium ${selected ? 'text-textOnAccent/85' : 'text-textMuted'}`}>
