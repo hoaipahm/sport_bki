@@ -1,5 +1,6 @@
 {
   "common": {
+    "retry": "Thử lại",
     "appName": "Hệ Thống Đặt Sân Thể Thao",
     "language": "Ngôn ngữ",
     "vietnamese": "Tiếng Việt",
@@ -103,6 +104,7 @@
     "featureFlags": "Cờ tính năng (Feature Flags)"
   },
   "errors": {
+    "PAYMENT_REVIEW_REQUIRED": "Đơn có khoản hoàn tiền hoặc số dư cần đối soát. Vui lòng liên hệ chủ sân trước khi dời lịch.",
     "SLOT_TAKEN": "Khung giờ này vừa có người đặt hoặc đang được giữ chỗ. Vui lòng chọn khung giờ khác.",
     "HOLD_EXPIRED": "Thời gian giữ chỗ thanh toán cọc đã hết hạn.",
     "INVALID_CREDENTIALS": "Tên đăng nhập hoặc mật khẩu không chính xác.",
@@ -451,6 +453,7 @@
     "deleteWarning": "Tài khoản sẽ bị ẩn danh hóa vĩnh viễn và thu hồi mọi phiên đăng nhập. Hãy nhập mật khẩu hiện tại để xác nhận."
   },
   "map": {
+    "tilesUnavailable": "Không tải được bản đồ đường phố. Bạn vẫn có thể chọn cơ sở hoặc mở chỉ đường.",
     "title": "Bản Đồ Sân Thể Thao & Khoảng Cách",
     "subtitle": "Khám phá vị trí thực tế các cơ sở, tính khoảng cách từ chỗ bạn và mở chỉ đường nhanh.",
     "locateMe": "Tìm sân gần vị trí của tôi",
