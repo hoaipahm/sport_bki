@@ -1,4 +1,4 @@
-import { Router, Response } from 'express';
+import { Router, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { generateSecret, generateURI, verifySync } from 'otplib';
 import { pool } from '../../config/database';
@@ -8,7 +8,7 @@ import { AuthenticatedRequest, requirePortal, sendTranslatedError } from '../../
 import { recordAuditLog } from '../../common/audit';
 import { broadcastCourtChange } from '../../common/realtime';
 import { uploadMiddleware, avatarUploadMiddleware, optimizeAndSaveImage, optimizeAvatarImage, handleUploadErrors } from '../../common/uploader';
-import { uploadRateLimiter } from '../../common/security';
+import { authRateLimiter, uploadRateLimiter } from '../../common/security';
 import { expandPhysicalCourts } from '../booking/booking.service';
 import { vietnamDate } from '../../../../shared/booking';
 import { adminExtensionsRouter } from './extensions.routes';
@@ -25,11 +25,23 @@ async function getAdminPermittedVenues(userId: string, role: string | undefined,
   return res.rows.map((r) => r.venue_id);
 }
 
+function requireAssignedResource(table: 'courts' | 'price_rules') {
+  return async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const row = (await pool.query(`SELECT venue_id FROM ${table} WHERE id = $1 AND tenant_id = $2`, [req.params.id, req.user!.tenantId])).rows[0];
+      if (!row) return res.status(404).json({ error_code: 'NOT_FOUND' });
+      const permitted = await getAdminPermittedVenues(req.user!.userId, req.user!.role, req.user!.tenantId!);
+      if (!permitted.includes(row.venue_id)) return res.status(403).json({ error_code: 'VENUE_ACCESS_DENIED' });
+      next();
+    } catch { return res.status(500).json({ error_code: 'INTERNAL_ERROR' }); }
+  };
+}
+
 // ============================================================================
 // 1. TENANT ADMIN AUTHENTICATION & SERVER-BOUND 2FA (F-09)
 // ============================================================================
 
-adminRouter.post('/auth/login', async (req: AuthenticatedRequest, res: Response) => {
+adminRouter.post('/auth/login', authRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
   const { username, email, password, totp_code } = req.body;
   const loginIdentifier = String(username || email || '').trim().toLowerCase();
   if (!loginIdentifier || !password) {
@@ -39,7 +51,7 @@ adminRouter.post('/auth/login', async (req: AuthenticatedRequest, res: Response)
   try {
     const adminRes = await pool.query(
       `SELECT s.id, s.tenant_id, s.full_name, s.username, s.email, s.phone, s.avatar_url, s.discount_limit,
-              s.password_hash, s.role, s.preferred_language, s.totp_secret, s.totp_enabled, s.created_at, t.name as tenant_name
+              s.password_hash, s.auth_version, s.role, s.preferred_language, s.totp_secret, s.totp_enabled, s.created_at, t.name as tenant_name
        FROM tenant_staff s
        JOIN tenants t ON t.id = s.tenant_id AND t.status = 'ACTIVE'
        WHERE (LOWER(s.username) = $1 OR LOWER(COALESCE(s.email, '')) = $1)
@@ -67,8 +79,8 @@ adminRouter.post('/auth/login', async (req: AuthenticatedRequest, res: Response)
           message: 'Vui lòng nhập mã 6 số từ ứng dụng xác thực 2FA.',
         });
       }
-      const check2fa = verifySync({ token: String(totp_code).trim(), secret: admin.totp_secret });
-      if (!check2fa.valid) {
+      const check2fa = /^\d{6}$/.test(String(totp_code).trim()) && verifySync({ token: String(totp_code).trim(), secret: admin.totp_secret, epochTolerance: [30, 0] });
+      if (!check2fa || !check2fa.valid) {
         return res.status(401).json({
           error_code: 'INVALID_2FA_TOKEN',
           requires_2fa: true,
@@ -82,6 +94,7 @@ adminRouter.post('/auth/login', async (req: AuthenticatedRequest, res: Response)
     const token = signAccessToken({
       userId: admin.id,
       portal: 'admin',
+      sessionVersion: admin.auth_version,
       tenantId: admin.tenant_id,
       role: admin.role,
       preferredLanguage: admin.preferred_language,
@@ -225,7 +238,8 @@ adminRouter.post('/me/password', requirePortal('admin'), async (req: Authenticat
 adminRouter.post('/auth/2fa/setup', requirePortal('admin'), async (req: AuthenticatedRequest, res: Response) => {
   const userId = req.user!.userId;
   const secret = generateSecret();
-  await pool.query(`UPDATE tenant_staff SET totp_secret = $1 WHERE id = $2`, [secret, userId]);
+  const initialized = await pool.query(`UPDATE tenant_staff SET totp_secret = $1 WHERE id = $2 AND totp_enabled = FALSE RETURNING id`, [secret, userId]);
+  if (!initialized.rowCount) return res.status(409).json({ error_code: 'TWO_FACTOR_ALREADY_ENABLED' });
   const otpauth = generateURI({
     secret,
     label: `owner-${userId.slice(0, 8)}`,
@@ -244,7 +258,7 @@ adminRouter.post('/auth/2fa/verify', requirePortal('admin'), async (req: Authent
     return res.status(400).json({ error_code: '2FA_NOT_INITIALIZED', message: 'Chưa khởi tạo mã bí mật 2FA.' });
   }
 
-  const result = verifySync({ token: String(token).trim(), secret: row.totp_secret });
+  const result = verifySync({ token: String(token).trim(), secret: row.totp_secret, epochTolerance: [30, 0] });
   if (!result.valid) {
     return res.status(400).json({ error_code: 'INVALID_2FA_TOKEN', message: 'Mã 2FA không hợp lệ.' });
   }
@@ -419,13 +433,13 @@ adminRouter.post('/price-rules', requirePortal('admin'), async (req: Authenticat
   return res.status(201).json({ price_rule: ins.rows[0] });
 });
 
-adminRouter.delete('/price-rules/:id', requirePortal('admin'), async (req: AuthenticatedRequest, res: Response) => {
+adminRouter.delete('/price-rules/:id', requirePortal('admin'), requireAssignedResource('price_rules'), async (req: AuthenticatedRequest, res: Response) => {
   const tenantId = req.user!.tenantId!;
   await pool.query(`DELETE FROM price_rules WHERE id = $1 AND tenant_id = $2`, [req.params.id, tenantId]);
   return res.json({ message: 'Đã xóa quy tắc giá.' });
 });
 
-adminRouter.put('/price-rules/:id', requirePortal('admin'), async (req: AuthenticatedRequest, res: Response) => {
+adminRouter.put('/price-rules/:id', requirePortal('admin'), requireAssignedResource('price_rules'), async (req: AuthenticatedRequest, res: Response) => {
   const tenantId = req.user!.tenantId!;
   const safePrice = Number(req.body?.price_per_hour);
   if (!Number.isSafeInteger(safePrice) || safePrice <= 0) {
@@ -444,7 +458,7 @@ adminRouter.put('/price-rules/:id', requirePortal('admin'), async (req: Authenti
   return res.json({ price_rule: upd.rows[0] });
 });
 
-adminRouter.put('/courts/:id', requirePortal('admin'), async (req: AuthenticatedRequest, res: Response) => {
+adminRouter.put('/courts/:id', requirePortal('admin'), requireAssignedResource('courts'), async (req: AuthenticatedRequest, res: Response) => {
   const tenantId = req.user!.tenantId!;
   const { name, name_en, court_type, sport_id, is_outdoor, is_active } = req.body;
   const cur = (await pool.query(`SELECT * FROM courts WHERE id = $1 AND tenant_id = $2`, [req.params.id, tenantId])).rows[0];
@@ -481,7 +495,7 @@ adminRouter.put('/courts/:id', requirePortal('admin'), async (req: Authenticated
   return res.json({ court: upd.rows[0] });
 });
 
-adminRouter.delete('/courts/:id', requirePortal('admin'), async (req: AuthenticatedRequest, res: Response) => {
+adminRouter.delete('/courts/:id', requirePortal('admin'), requireAssignedResource('courts'), async (req: AuthenticatedRequest, res: Response) => {
   const tenantId = req.user!.tenantId!;
   const activeBk = await pool.query(
     `SELECT COUNT(*)::int as cnt
@@ -508,6 +522,8 @@ adminRouter.delete('/venues/:id', requirePortal('admin'), async (req: Authentica
   if (req.user!.role !== 'OWNER') {
     return res.status(403).json({ error_code: 'OWNER_REQUIRED', message: 'Chỉ Chủ sân (Owner) mới được xóa cơ sở.' });
   }
+  const ownVenue = await pool.query('SELECT id FROM venues WHERE id = $1 AND tenant_id = $2', [req.params.id, tenantId]);
+  if (!ownVenue.rowCount) return res.status(404).json({ error_code: 'NOT_FOUND' });
   const activeBk = await pool.query(
     `SELECT COUNT(*)::int as cnt
      FROM bookings b
@@ -524,7 +540,7 @@ adminRouter.delete('/venues/:id', requirePortal('admin'), async (req: Authentica
     });
   }
   await databaseScope.run({ service: true }, async () => {
-    await pool.query(`DELETE FROM staff_venue_assignments WHERE venue_id = $1`, [req.params.id]);
+    await pool.query(`DELETE FROM staff_venue_assignments WHERE venue_id = $1 AND EXISTS (SELECT 1 FROM venues WHERE id = $1 AND tenant_id = $2)`, [req.params.id, tenantId]);
   });
   const del = await pool.query(`DELETE FROM venues WHERE id = $1 AND tenant_id = $2 RETURNING id, name`, [req.params.id, tenantId]);
   if (!del.rows[0]) return res.status(404).json({ error_code: 'NOT_FOUND' });
@@ -561,6 +577,11 @@ adminRouter.post('/blocks', requirePortal('admin'), async (req: AuthenticatedReq
   try {
     await client.query('BEGIN');
 
+    const court = await client.query('SELECT id FROM courts WHERE id=$1 AND venue_id=$2 AND tenant_id=$3', [court_id, venue_id, tenantId]);
+    if (!court.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error_code: 'INVALID_SLOT' });
+    }
     const physicalCourtIds = await expandPhysicalCourts(client, court_id);
 
     const overlapRes = await client.query(
