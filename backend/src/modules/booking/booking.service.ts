@@ -44,7 +44,7 @@ export function buildPaymentDescriptor(
     bankInfo?.bank_id &&
     bankInfo?.account_number &&
     bankInfo?.account_name &&
-    bankInfo?.verified_by_owner !== false
+    bankInfo?.verified_by_owner === true
   );
 
   if (hasLiveBank) {
@@ -466,6 +466,8 @@ export async function processBankPaymentEvent(params: {
     await client.query('BEGIN');
 
     // 1. Idempotency check on eventId
+    // Serialize retries before inspecting the unique event key, including concurrent deliveries.
+    await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [eventId]);
     const existingEvent = await client.query(`SELECT id FROM webhook_events WHERE event_id = $1`, [eventId]);
     if (existingEvent.rows.length > 0) {
       await client.query('ROLLBACK');
@@ -618,7 +620,8 @@ export async function processBankPaymentEvent(params: {
       paymentReviewReason = 'UNDERPAID';
     } else if (newPaid > totalAmount) {
       mismatchType = 'OVERPAID_EXCESS';
-      refundQueued = newPaid - totalAmount;
+      // Only refund this event's additional excess; previous excess already has a ledger entry.
+      refundQueued = Math.max(0, newPaid - totalAmount) - Math.max(0, previousPaid - totalAmount);
       reconciliationNote = `Thanh toán vượt tổng tiền sân ${refundQueued} VND — chờ hoàn tiền thừa`;
       paymentReviewReason = 'OVERPAID_REFUND_DUE';
     } else if (newPaid > depositRequired) {
