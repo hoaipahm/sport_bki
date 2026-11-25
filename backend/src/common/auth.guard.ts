@@ -50,7 +50,7 @@ export function requirePortal(portal: PortalType) {
       } else if (portal === 'staff' || portal === 'admin') {
         const staffRow = (
           await pool.query(
-            `SELECT s.status, s.role, t.status as tenant_status
+            `SELECT s.status, s.role, s.auth_version, t.status as tenant_status
              FROM tenant_staff s
              JOIN tenants t ON t.id = s.tenant_id
              WHERE s.id = $1 AND s.tenant_id = $2`,
@@ -60,6 +60,7 @@ export function requirePortal(portal: PortalType) {
         const allowedStatuses = portal === 'staff' ? ['ACTIVE', 'INVITED'] : ['ACTIVE'];
         if (
           !staffRow ||
+          staffRow.auth_version !== (decoded.sessionVersion ?? 0) ||
           staffRow.tenant_status !== 'ACTIVE' ||
           !allowedStatuses.includes(staffRow.status) ||
           (portal === 'admin' && !['OWNER', 'MANAGER'].includes(staffRow.role))
@@ -70,10 +71,10 @@ export function requirePortal(portal: PortalType) {
       } else if (portal === 'platform') {
         const pAdmin = (
           await databaseScope.run({ service: true }, () =>
-            pool.query('SELECT is_active FROM platform_admins WHERE id = $1', [decoded.userId])
+            pool.query('SELECT is_active, auth_version FROM platform_admins WHERE id = $1', [decoded.userId])
           )
         ).rows[0];
-        if (!pAdmin?.is_active) throw new Error('INVALID_TOKEN');
+        if (!pAdmin?.is_active || pAdmin.auth_version !== (decoded.sessionVersion ?? 0)) throw new Error('INVALID_TOKEN');
       }
 
       authReq.user = decoded;
