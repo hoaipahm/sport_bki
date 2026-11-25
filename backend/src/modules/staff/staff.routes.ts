@@ -15,7 +15,7 @@ import {
 import { recordAuditLog } from '../../common/audit';
 import { broadcastCourtChange, attachSseStream } from '../../common/realtime';
 import { withIdempotency } from '../../common/idempotency';
-import { uploadRateLimiter } from '../../common/security';
+import { authRateLimiter, uploadRateLimiter } from '../../common/security';
 import { avatarUploadMiddleware, optimizeAvatarImage, handleUploadErrors } from '../../common/uploader';
 import { t } from '../../../../shared/i18n';
 import { vietnamDate } from '../../../../shared/booking';
@@ -43,7 +43,7 @@ async function getStaffAssignedVenues(staffId: string, role?: string, tenantId?:
 // 1. STAFF AUTHENTICATION & PIN MANAGEMENT (Section 19 & Section 20)
 // ============================================================================
 
-staffRouter.post('/auth/login', async (req: AuthenticatedRequest, res: Response) => {
+staffRouter.post('/auth/login', authRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
   const { username, email, phone, password } = req.body;
   const loginIdentifier = String(username || email || phone || '').trim().toLowerCase();
   if (!loginIdentifier || !password) {
@@ -53,7 +53,7 @@ staffRouter.post('/auth/login', async (req: AuthenticatedRequest, res: Response)
   try {
     const staffRes = await pool.query(
       `SELECT s.id, s.tenant_id, s.full_name, s.username, s.email, s.phone, s.avatar_url, s.discount_limit,
-              s.password_hash, s.pin_hash, s.role, s.status, s.preferred_language, s.created_at,
+              s.password_hash, s.pin_hash, s.auth_version, s.role, s.status, s.preferred_language, s.created_at,
               t.name as tenant_name
        FROM tenant_staff s
        JOIN tenants t ON t.id = s.tenant_id AND t.status = 'ACTIVE'
@@ -77,6 +77,7 @@ staffRouter.post('/auth/login', async (req: AuthenticatedRequest, res: Response)
     const token = signAccessToken({
       userId: staff.id,
       portal: 'staff',
+      sessionVersion: staff.auth_version,
       tenantId: staff.tenant_id,
       role: staff.role,
       preferredLanguage: staff.preferred_language,
@@ -140,7 +141,7 @@ staffRouter.post('/iot/devices/:id/manual', requirePortal('staff'), async (req: 
   }
 });
 
-staffRouter.post('/auth/pin-unlock', async (req: AuthenticatedRequest, res: Response) => {
+staffRouter.post('/auth/pin-unlock', authRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
   const { staff_id, pin } = req.body;
   if (!staff_id || !pin) {
     return res.status(400).json({ error_code: 'MISSING_FIELDS', message: 'staff_id and pin required.' });
@@ -148,7 +149,7 @@ staffRouter.post('/auth/pin-unlock', async (req: AuthenticatedRequest, res: Resp
 
   try {
     const staffRes = await pool.query(
-      `SELECT id, tenant_id, role, preferred_language, pin_hash
+      `SELECT id, tenant_id, role, preferred_language, pin_hash, auth_version
        FROM tenant_staff WHERE id = $1 AND status = 'ACTIVE'`,
       [staff_id]
     );
@@ -166,6 +167,7 @@ staffRouter.post('/auth/pin-unlock', async (req: AuthenticatedRequest, res: Resp
     const token = signAccessToken({
       userId: staff.id,
       portal: 'staff',
+      sessionVersion: staff.auth_version,
       tenantId: staff.tenant_id,
       role: staff.role,
       preferredLanguage: staff.preferred_language,
@@ -242,37 +244,7 @@ staffRouter.get('/me', requirePortal('staff'), async (req: AuthenticatedRequest,
   }
 });
 
-staffRouter.post('/iot/devices/:id/manual', requirePortal('staff'), async (req: AuthenticatedRequest, res: Response) => {
-  const staffId = req.user!.userId;
-  const tenantId = req.user!.tenantId!;
-  const { command = 'TURN_ON' } = req.body;
-  try {
-    const assigned = await getStaffAssignedVenues(staffId, req.user!.role, tenantId);
-    const devRes = await pool.query(
-      `SELECT * FROM device_integrations WHERE id = $1 AND tenant_id = $2 AND venue_id = ANY($3)`,
-      [req.params.id, tenantId, assigned]
-    );
-    if (devRes.rows.length === 0) return res.status(403).json({ error_code: 'VENUE_ACCESS_DENIED' });
 
-    const nextPower = command === 'TURN_OFF' ? 'OFF' : 'ON';
-    const upd = await pool.query(
-      `UPDATE device_integrations
-       SET power_state = $1, control_mode = 'MANUAL_OVERRIDE', simulate_unreachable = FALSE, last_error = NULL, last_heartbeat_at = NOW()
-       WHERE id = $2 RETURNING id, device_name, power_state, control_mode, last_heartbeat_at`,
-      [nextPower, req.params.id]
-    );
-
-    await pool.query(
-      `INSERT INTO device_commands (tenant_id, device_id, command, trigger_source, actor_id, status, attempts, detail)
-       VALUES ($1, $2, $3, 'MANUAL_STAFF', $4, 'ACKED', 1, $5)`,
-      [tenantId, req.params.id, command === 'TURN_OFF' ? 'TURN_OFF' : 'TURN_ON', staffId, `Nhân viên bật/tắt thủ công tại quầy -> ${nextPower}`]
-    );
-
-    return res.json({ device: upd.rows[0] });
-  } catch (err: any) {
-    return res.status(500).json({ error_code: 'INTERNAL_ERROR', message: err.message });
-  }
-});
 
 staffRouter.patch('/me', requirePortal('staff'), async (req: AuthenticatedRequest, res: Response) => {
   const staffId = req.user!.userId;
@@ -372,37 +344,7 @@ staffRouter.get('/venues', requirePortal('staff'), async (req: AuthenticatedRequ
   }
 });
 
-staffRouter.post('/iot/devices/:id/manual', requirePortal('staff'), async (req: AuthenticatedRequest, res: Response) => {
-  const staffId = req.user!.userId;
-  const tenantId = req.user!.tenantId!;
-  const { command = 'TURN_ON' } = req.body;
-  try {
-    const assigned = await getStaffAssignedVenues(staffId, req.user!.role, tenantId);
-    const devRes = await pool.query(
-      `SELECT * FROM device_integrations WHERE id = $1 AND tenant_id = $2 AND venue_id = ANY($3)`,
-      [req.params.id, tenantId, assigned]
-    );
-    if (devRes.rows.length === 0) return res.status(403).json({ error_code: 'VENUE_ACCESS_DENIED' });
 
-    const nextPower = command === 'TURN_OFF' ? 'OFF' : 'ON';
-    const upd = await pool.query(
-      `UPDATE device_integrations
-       SET power_state = $1, control_mode = 'MANUAL_OVERRIDE', simulate_unreachable = FALSE, last_error = NULL, last_heartbeat_at = NOW()
-       WHERE id = $2 RETURNING id, device_name, power_state, control_mode, last_heartbeat_at`,
-      [nextPower, req.params.id]
-    );
-
-    await pool.query(
-      `INSERT INTO device_commands (tenant_id, device_id, command, trigger_source, actor_id, status, attempts, detail)
-       VALUES ($1, $2, $3, 'MANUAL_STAFF', $4, 'ACKED', 1, $5)`,
-      [tenantId, req.params.id, command === 'TURN_OFF' ? 'TURN_OFF' : 'TURN_ON', staffId, `Nhân viên bật/tắt thủ công tại quầy -> ${nextPower}`]
-    );
-
-    return res.json({ device: upd.rows[0] });
-  } catch (err: any) {
-    return res.status(500).json({ error_code: 'INTERNAL_ERROR', message: err.message });
-  }
-});
 
 staffRouter.get('/venues/:id/realtime', requirePortal('staff'), async (req: AuthenticatedRequest, res: Response) => {
   const assigned = await getStaffAssignedVenues(req.user!.userId, req.user!.role, req.user!.tenantId);
@@ -503,37 +445,7 @@ staffRouter.get('/shifts/current', requirePortal('staff'), async (req: Authentic
   }
 });
 
-staffRouter.post('/iot/devices/:id/manual', requirePortal('staff'), async (req: AuthenticatedRequest, res: Response) => {
-  const staffId = req.user!.userId;
-  const tenantId = req.user!.tenantId!;
-  const { command = 'TURN_ON' } = req.body;
-  try {
-    const assigned = await getStaffAssignedVenues(staffId, req.user!.role, tenantId);
-    const devRes = await pool.query(
-      `SELECT * FROM device_integrations WHERE id = $1 AND tenant_id = $2 AND venue_id = ANY($3)`,
-      [req.params.id, tenantId, assigned]
-    );
-    if (devRes.rows.length === 0) return res.status(403).json({ error_code: 'VENUE_ACCESS_DENIED' });
 
-    const nextPower = command === 'TURN_OFF' ? 'OFF' : 'ON';
-    const upd = await pool.query(
-      `UPDATE device_integrations
-       SET power_state = $1, control_mode = 'MANUAL_OVERRIDE', simulate_unreachable = FALSE, last_error = NULL, last_heartbeat_at = NOW()
-       WHERE id = $2 RETURNING id, device_name, power_state, control_mode, last_heartbeat_at`,
-      [nextPower, req.params.id]
-    );
-
-    await pool.query(
-      `INSERT INTO device_commands (tenant_id, device_id, command, trigger_source, actor_id, status, attempts, detail)
-       VALUES ($1, $2, $3, 'MANUAL_STAFF', $4, 'ACKED', 1, $5)`,
-      [tenantId, req.params.id, command === 'TURN_OFF' ? 'TURN_OFF' : 'TURN_ON', staffId, `Nhân viên bật/tắt thủ công tại quầy -> ${nextPower}`]
-    );
-
-    return res.json({ device: upd.rows[0] });
-  } catch (err: any) {
-    return res.status(500).json({ error_code: 'INTERNAL_ERROR', message: err.message });
-  }
-});
 
 staffRouter.post('/shifts/close', requirePortal('staff'), async (req: AuthenticatedRequest, res: Response) => {
   const staffId = req.user!.userId;
@@ -681,37 +593,7 @@ staffRouter.get('/calendar', requirePortal('staff'), async (req: AuthenticatedRe
   }
 });
 
-staffRouter.post('/iot/devices/:id/manual', requirePortal('staff'), async (req: AuthenticatedRequest, res: Response) => {
-  const staffId = req.user!.userId;
-  const tenantId = req.user!.tenantId!;
-  const { command = 'TURN_ON' } = req.body;
-  try {
-    const assigned = await getStaffAssignedVenues(staffId, req.user!.role, tenantId);
-    const devRes = await pool.query(
-      `SELECT * FROM device_integrations WHERE id = $1 AND tenant_id = $2 AND venue_id = ANY($3)`,
-      [req.params.id, tenantId, assigned]
-    );
-    if (devRes.rows.length === 0) return res.status(403).json({ error_code: 'VENUE_ACCESS_DENIED' });
 
-    const nextPower = command === 'TURN_OFF' ? 'OFF' : 'ON';
-    const upd = await pool.query(
-      `UPDATE device_integrations
-       SET power_state = $1, control_mode = 'MANUAL_OVERRIDE', simulate_unreachable = FALSE, last_error = NULL, last_heartbeat_at = NOW()
-       WHERE id = $2 RETURNING id, device_name, power_state, control_mode, last_heartbeat_at`,
-      [nextPower, req.params.id]
-    );
-
-    await pool.query(
-      `INSERT INTO device_commands (tenant_id, device_id, command, trigger_source, actor_id, status, attempts, detail)
-       VALUES ($1, $2, $3, 'MANUAL_STAFF', $4, 'ACKED', 1, $5)`,
-      [tenantId, req.params.id, command === 'TURN_OFF' ? 'TURN_OFF' : 'TURN_ON', staffId, `Nhân viên bật/tắt thủ công tại quầy -> ${nextPower}`]
-    );
-
-    return res.json({ device: upd.rows[0] });
-  } catch (err: any) {
-    return res.status(500).json({ error_code: 'INTERNAL_ERROR', message: err.message });
-  }
-});
 
 staffRouter.get('/bookings', requirePortal('staff'), async (req: AuthenticatedRequest, res: Response) => {
   const staffId = req.user!.userId;
@@ -976,37 +858,7 @@ staffRouter.post('/bookings', requirePortal('staff'), async (req: AuthenticatedR
   }
 });
 
-staffRouter.post('/iot/devices/:id/manual', requirePortal('staff'), async (req: AuthenticatedRequest, res: Response) => {
-  const staffId = req.user!.userId;
-  const tenantId = req.user!.tenantId!;
-  const { command = 'TURN_ON' } = req.body;
-  try {
-    const assigned = await getStaffAssignedVenues(staffId, req.user!.role, tenantId);
-    const devRes = await pool.query(
-      `SELECT * FROM device_integrations WHERE id = $1 AND tenant_id = $2 AND venue_id = ANY($3)`,
-      [req.params.id, tenantId, assigned]
-    );
-    if (devRes.rows.length === 0) return res.status(403).json({ error_code: 'VENUE_ACCESS_DENIED' });
 
-    const nextPower = command === 'TURN_OFF' ? 'OFF' : 'ON';
-    const upd = await pool.query(
-      `UPDATE device_integrations
-       SET power_state = $1, control_mode = 'MANUAL_OVERRIDE', simulate_unreachable = FALSE, last_error = NULL, last_heartbeat_at = NOW()
-       WHERE id = $2 RETURNING id, device_name, power_state, control_mode, last_heartbeat_at`,
-      [nextPower, req.params.id]
-    );
-
-    await pool.query(
-      `INSERT INTO device_commands (tenant_id, device_id, command, trigger_source, actor_id, status, attempts, detail)
-       VALUES ($1, $2, $3, 'MANUAL_STAFF', $4, 'ACKED', 1, $5)`,
-      [tenantId, req.params.id, command === 'TURN_OFF' ? 'TURN_OFF' : 'TURN_ON', staffId, `Nhân viên bật/tắt thủ công tại quầy -> ${nextPower}`]
-    );
-
-    return res.json({ device: upd.rows[0] });
-  } catch (err: any) {
-    return res.status(500).json({ error_code: 'INTERNAL_ERROR', message: err.message });
-  }
-});
 
 staffRouter.post('/bookings/:id/check-in', requirePortal('staff'), async (req: AuthenticatedRequest, res: Response) => {
   const bookingId = req.params.id;
@@ -1399,37 +1251,7 @@ staffRouter.post('/payments', requirePortal('staff'), async (req: AuthenticatedR
   }
 });
 
-staffRouter.post('/iot/devices/:id/manual', requirePortal('staff'), async (req: AuthenticatedRequest, res: Response) => {
-  const staffId = req.user!.userId;
-  const tenantId = req.user!.tenantId!;
-  const { command = 'TURN_ON' } = req.body;
-  try {
-    const assigned = await getStaffAssignedVenues(staffId, req.user!.role, tenantId);
-    const devRes = await pool.query(
-      `SELECT * FROM device_integrations WHERE id = $1 AND tenant_id = $2 AND venue_id = ANY($3)`,
-      [req.params.id, tenantId, assigned]
-    );
-    if (devRes.rows.length === 0) return res.status(403).json({ error_code: 'VENUE_ACCESS_DENIED' });
 
-    const nextPower = command === 'TURN_OFF' ? 'OFF' : 'ON';
-    const upd = await pool.query(
-      `UPDATE device_integrations
-       SET power_state = $1, control_mode = 'MANUAL_OVERRIDE', simulate_unreachable = FALSE, last_error = NULL, last_heartbeat_at = NOW()
-       WHERE id = $2 RETURNING id, device_name, power_state, control_mode, last_heartbeat_at`,
-      [nextPower, req.params.id]
-    );
-
-    await pool.query(
-      `INSERT INTO device_commands (tenant_id, device_id, command, trigger_source, actor_id, status, attempts, detail)
-       VALUES ($1, $2, $3, 'MANUAL_STAFF', $4, 'ACKED', 1, $5)`,
-      [tenantId, req.params.id, command === 'TURN_OFF' ? 'TURN_OFF' : 'TURN_ON', staffId, `Nhân viên bật/tắt thủ công tại quầy -> ${nextPower}`]
-    );
-
-    return res.json({ device: upd.rows[0] });
-  } catch (err: any) {
-    return res.status(500).json({ error_code: 'INTERNAL_ERROR', message: err.message });
-  }
-});
 
 
 // ============================================================================
