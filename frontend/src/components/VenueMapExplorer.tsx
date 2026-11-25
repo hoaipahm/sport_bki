@@ -94,14 +94,17 @@ export function VenueMapExplorer({
   const [geoNotice, setGeoNotice] = useState('');
   const [mapStyle, setMapStyle] = useState<'standard' | 'dark'>('standard');
   const [zoom, setZoom] = useState(14);
+  const [tileError, setTileError] = useState(false);
+  const [tileAttempt, setTileAttempt] = useState(0);
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const [viewSize, setViewSize] = useState({ w: 720, h: tallMap ? 480 : 400 });
 
   const enrichedVenues = useMemo(() => {
-    const list = venues.map((v, idx) => {
-      const lat = typeof v.latitude === 'number' ? v.latitude : 21.0338 - idx * 0.022;
-      const lng = typeof v.longitude === 'number' ? v.longitude : 105.8001 + idx * 0.02;
+    const list = venues.filter(v => typeof v.latitude === 'number' && Number.isFinite(v.latitude) && Math.abs(v.latitude) <= 90 &&
+      typeof v.longitude === 'number' && Number.isFinite(v.longitude) && Math.abs(v.longitude) <= 180).map(v => {
+      const lat = v.latitude!;
+      const lng = v.longitude!;
       const distanceKm = userCoords ? haversineKm(userCoords.lat, userCoords.lng, lat, lng) : null;
       return { ...v, lat, lng, distanceKm };
     });
@@ -257,7 +260,7 @@ export function VenueMapExplorer({
         const key = `${zoom}/${wrappedTx}/${ty}`;
         tiles.push({
           key,
-          url: `${API_BASE}/map-tiles/osm/${zoom}/${wrappedTx}/${ty}.png`,
+          url: `${API_BASE}/map-tiles/osm/${zoom}/${wrappedTx}/${ty}.png?attempt=${tileAttempt}`,
           left: Math.round(tx * 256 - topLeftWx),
           top: Math.round(ty * 256 - topLeftWy),
         });
@@ -278,7 +281,7 @@ export function VenueMapExplorer({
       : null;
 
     return { tiles, pins, userPin };
-  }, [center.lat, center.lng, zoom, viewSize.w, viewSize.h, enrichedVenues, userCoords, mapStyle]);
+  }, [center.lat, center.lng, zoom, viewSize.w, viewSize.h, enrichedVenues, userCoords, mapStyle, tileAttempt]);
 
   if (enrichedVenues.length === 0) return null;
 
@@ -371,16 +374,28 @@ export function VenueMapExplorer({
             {streetScene.tiles.map((tile) => (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                key={tile.key}
+                key={`${tile.key}:${tileAttempt}`}
                 src={tile.url}
                 alt=""
                 draggable={false}
+                onError={() => setTileError(true)}
                 className={`absolute w-[256px] h-[256px] max-w-none pointer-events-none ${
                   mapStyle === 'dark' ? 'emerald-street-tile' : ''
                 }`}
                 style={{ left: `${tile.left}px`, top: `${tile.top}px` }}
               />
             ))}
+
+            {tileError && (
+              <div role="status" className="absolute inset-x-3 top-3 z-30 p-3 rounded-token-sm bg-panel border border-borderStrong text-textBody text-sm"
+                onPointerDown={event => event.stopPropagation()}>
+                <p>{t('map.tilesUnavailable')}</p>
+                <button type="button" className="mt-2 min-h-[44px] px-3 rounded-token-sm bg-accent text-textOnAccent font-semibold"
+                  onClick={() => { setTileError(false); setTileAttempt(value => value + 1); }}>
+                  {t('common.retry')}
+                </button>
+              </div>
+            )}
 
             {/* Route Line from User GPS to Active Venue */}
             {streetScene.userPin && activePinInStreet && (
