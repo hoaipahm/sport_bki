@@ -1,0 +1,14 @@
+{
+  "name": "sport-bki",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "db:migrate": "node scripts/migrate.cjs",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "test:core": "node qa/core-regression.cjs",
+    "test:api": "node qa/comprehensive-full-suite.cjs",
+    "test:browser": "node qa/portal-browser-check.cjs",
+    "start:api": "npm --prefix backend start",
+    "start:web": "npm --prefix frontend start"
+  }
+}

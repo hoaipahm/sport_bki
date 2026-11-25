@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "build": "tsc",
-    "start": "ts-node src/main.ts",
+    "start": "node dist/backend/src/main.js",
     "start:dev": "node --watch -r ts-node/register/transpile-only src/main.ts",
     "test": "node ../qa/comprehensive-full-suite.cjs"
   },

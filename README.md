@@ -2,7 +2,9 @@
 
 # Sport BKI — Multi-Tenant Sports Court Booking Platform
 
-**Production-grade court reservation, counter POS reconciliation, multi-venue operations, and SaaS tenant governance built on PostgreSQL GiST exclusion constraints and Row-Level Security.**
+**Court reservation, counter POS reconciliation, multi-venue operations, and SaaS tenant governance built on PostgreSQL GiST exclusion constraints and Row-Level Security.**
+
+**Verification, 25 November 2026:** local runtime and selected business/security flows are verified; this is not a production-completion certificate. Read the [current Vietnamese review](docs/REVIEW_2026-11-25_VI.md) and [local run guide](docs/LOCAL_RUN_VI.md). Older audit sections describe historical snapshots.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Next.js](https://img.shields.io/badge/Next.js-16.4-000000?style=flat-square&logo=nextdotjs&logoColor=white)](https://nextjs.org/)

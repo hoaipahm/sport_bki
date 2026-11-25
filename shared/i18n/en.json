@@ -1,5 +1,6 @@
 {
   "common": {
+    "retry": "Retry",
     "appName": "Sports Court Booking Platform",
     "language": "Language",
     "vietnamese": "Tiếng Việt",
@@ -103,6 +104,7 @@
     "featureFlags": "Feature Flags"
   },
   "errors": {
+    "PAYMENT_REVIEW_REQUIRED": "This booking has a refund or balance requiring reconciliation. Contact the venue before rescheduling.",
     "SLOT_TAKEN": "This time slot was just booked or is currently on hold. Please choose another slot.",
     "HOLD_EXPIRED": "The hold period for deposit payment has expired.",
     "INVALID_CREDENTIALS": "Incorrect username or password.",
@@ -451,6 +453,7 @@
     "deleteWarning": "Your personal data will be permanently anonymized and all sessions revoked. Enter your current password to confirm."
   },
   "map": {
+    "tilesUnavailable": "Street map unavailable. You can still select a venue or open directions.",
     "title": "Interactive Venue Map & Nearby Distance",
     "subtitle": "Explore venue coordinates, calculate distance from your location, and launch turn-by-turn directions.",
     "locateMe": "Find courts near me",

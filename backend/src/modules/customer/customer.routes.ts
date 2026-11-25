@@ -25,6 +25,7 @@ import { avatarUploadMiddleware, optimizeAvatarImage, handleUploadErrors } from 
 import { withIdempotency } from '../../common/idempotency';
 import { isSmtpConfigured, dispatchQueuedEmail } from '../../common/email.service';
 import { t } from '../../../../shared/i18n';
+import { canPreviewLocalOtp } from '../../common/local-preview';
 import { vietnamDate, calculateRefundPolicy } from '../../../../shared/booking';
 import { customerAuthRouter } from './auth.routes';
 import { customerExtensionsRouter } from './customer.extensions.routes';
@@ -279,8 +280,8 @@ customerRouter.post('/me/email/request-change', requirePortal('customer'), authR
 
   const cleanEmail = new_email.trim();
   const normEmail = normalizeEmail(cleanEmail);
-  const isLocalTestMode = !isSmtpConfigured() || process.env.AUTH_EMAIL_MODE === 'local';
-  if (!isSmtpConfigured() && process.env.NODE_ENV === 'production' && process.env.AUTH_EMAIL_MODE !== 'local') {
+  const isLocalTestMode = canPreviewLocalOtp(req);
+  if (!isLocalTestMode && (!isSmtpConfigured() || process.env.AUTH_EMAIL_MODE === 'local')) {
     return sendTranslatedError(req, res, 503, 'EMAIL_UNAVAILABLE');
   }
 
@@ -795,6 +796,11 @@ customerRouter.post('/bookings', requirePortal('customer'), async (req: Authenti
   const userId = req.user!.userId;
   const { venue_id, court_id, start_at, end_at, intervals } = req.body;
 
+  if (intervals !== undefined && (!Array.isArray(intervals) || intervals.length === 0 || intervals.length > 16 ||
+      intervals.some((interval: any) => !interval || typeof interval.start_at !== 'string' || typeof interval.end_at !== 'string'))) {
+    return res.status(400).json({ error_code: 'INVALID_SLOT', message: t('errors.INVALID_SLOT', req.lang || 'vi') });
+  }
+
   const rawIntervals: Array<{ start_at: string; end_at: string }> =
     Array.isArray(intervals) && intervals.length > 0
       ? intervals
@@ -1009,6 +1015,11 @@ customerRouter.post('/bookings/:id/reschedule', requirePortal('customer'), async
           };
         }
         const oldBooking = oldRes.rows[0];
+        const ledger = (await client.query(`SELECT COALESCE(SUM(amount), 0) AS paid FROM payments WHERE booking_id = $1 AND status = 'CONFIRMED'`, [oldBookingId])).rows[0];
+        const refunds = (await client.query(`SELECT COUNT(*)::int AS count FROM refunds WHERE booking_id = $1 AND status IN ('PENDING', 'COMPLETED')`, [oldBookingId])).rows[0];
+        if (Number(ledger.paid) !== Number(oldBooking.paid_amount || 0) || refunds.count > 0) {
+          throw new BookingDomainError('PAYMENT_REVIEW_REQUIRED', 409);
+        }
 
         const oldCourtsRes = await client.query(
           `SELECT court_id, start_at, end_at FROM booking_courts WHERE booking_id = $1 AND active = TRUE`,
@@ -1027,11 +1038,8 @@ customerRouter.post('/bookings/:id/reschedule', requirePortal('customer'), async
         }
 
         // Release old court rows inside transaction so customer can shift their own slot window cleanly
-        await client.query(`UPDATE booking_courts SET active = FALSE WHERE booking_id = $1`, [oldBookingId]);
-        await client.query(
-          `UPDATE bookings SET status = 'CANCELLED', cancel_reason = 'Rescheduled to new booking', updated_at = NOW() WHERE id = $1`,
-          [oldBookingId]
-        );
+        await client.query(`DELETE FROM booking_courts WHERE booking_id = $1`, [oldBookingId]);
+        await client.query(`DELETE FROM booking_items WHERE booking_id = $1 AND item_type = 'COURT_SLOT'`, [oldBookingId]);
 
         const quote = await validateAndQuoteSlot(client, {
           venueId: oldBooking.venue_id,
@@ -1042,31 +1050,28 @@ customerRouter.post('/bookings/:id/reschedule', requirePortal('customer'), async
           requirePaymentConfig: false,
         });
 
-        const carriedPaid = Number(oldBooking.paid_amount || oldBooking.deposit_amount || 0);
+        const carriedPaid = Number(ledger.paid);
         const newDueAtVenue = Math.max(0, quote.totalAmount - carriedPaid);
         const excessRefund = Math.max(0, carriedPaid - quote.totalAmount);
-        const newBookingCode = generateBookingCode();
+        const newBookingCode = oldBooking.booking_code;
 
         const newBRes = await client.query(
-          `INSERT INTO bookings (
-             tenant_id, venue_id, customer_id, booking_code, status,
-             total_amount, deposit_amount, paid_amount, due_at_venue,
-             refund_status, refund_amount, rescheduled_from_id, notes
-           ) VALUES ($1, $2, $3, $4, 'CONFIRMED', $5, $6, $7, $8, $9, $10, $11, $12)
+          `UPDATE bookings SET total_amount = $1, deposit_amount = $2,
+             paid_amount = $3, due_at_venue = $4, refund_status = $5, refund_amount = $6,
+             price_snapshot = $7, applied_deal_id = $8, updated_at = NOW()
+           WHERE id = $9 AND customer_id = $10
            RETURNING *`,
           [
-            quote.tenantId,
-            quote.venueId,
-            userId,
-            newBookingCode,
             quote.totalAmount,
             quote.depositAmount,
-            Math.min(carriedPaid, quote.totalAmount),
+            carriedPaid,
             newDueAtVenue,
             excessRefund > 0 ? 'PENDING' : 'NONE',
             excessRefund,
+            JSON.stringify(quote.priceSnapshot),
+            quote.appliedDealId,
             oldBooking.id,
-            `Dời lịch từ mã ${oldBooking.booking_code}`,
+            userId,
           ]
         );
         const newBooking = newBRes.rows[0];
@@ -1129,7 +1134,7 @@ customerRouter.post('/bookings/:id/reschedule', requirePortal('customer'), async
           action: 'RESCHEDULE_BOOKING',
           targetTable: 'bookings',
           targetId: newBooking.id,
-          beforeState: { old_booking_id: oldBookingId, old_code: oldBooking.booking_code },
+          beforeState: { old_booking_id: oldBookingId, old_code: oldBooking.booking_code, slots: oldCourtsRes.rows },
           afterState: newBooking,
           ipAddress: req.ip,
         });
@@ -1242,7 +1247,7 @@ customerRouter.get('/bookings/:id/payment', requirePortal('customer'), async (re
  * Disabled in production or when tenant has disabled sandbox_mode!
  */
 customerRouter.post('/bookings/:id/sandbox-pay', requirePortal('customer'), async (req: AuthenticatedRequest, res: Response) => {
-  if (process.env.NODE_ENV === 'production') {
+  if (!canPreviewLocalOtp(req)) {
     return res.status(403).json({ error_code: 'SANDBOX_DISABLED' });
   }
 
@@ -1264,8 +1269,7 @@ customerRouter.post('/bookings/:id/sandbox-pay', requirePortal('customer'), asyn
     if (bRes.rows.length === 0) {
       return res.status(404).json({ error_code: 'NOT_FOUND' });
     }
-    const first = bRes.rows[0];
-    if (first.bank_account_info?.sandbox_mode !== true) {
+    if (bRes.rows.some(booking => booking.bank_account_info?.sandbox_mode !== true)) {
       return res.status(403).json({
         error_code: 'SANDBOX_DISABLED',
         message: 'Chủ sân đã tắt chế độ thử nghiệm để nhận thanh toán thật.',
@@ -1332,7 +1336,8 @@ customerRouter.get('/bookings/:id/cancel-preview', requirePortal('customer'), as
       return res.status(404).json({ error_code: 'NOT_FOUND' });
     }
     const b = bRes.rows[0];
-    const calc = calculateRefundPolicy(b.cancellation_rules, b.start_at, Number(b.paid_amount || 0));
+    const reserved = (await pool.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM refunds WHERE booking_id=$1 AND status IN ('PENDING','COMPLETED')`, [bookingId])).rows[0];
+    const calc = calculateRefundPolicy(b.cancellation_rules, b.start_at, Math.max(0, Number(b.paid_amount || 0) - Number(reserved.amount)));
     return res.json({
       preview: {
         booking_id: b.id,
@@ -1411,13 +1416,15 @@ customerRouter.post('/bookings/:id/cancel', requirePortal('customer'), async (re
         );
         const primaryCourt = courtsRes.rows[0];
 
-        const paidAmount = Number(booking.paid_amount || 0);
+        const allocated = (await client.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM refunds WHERE booking_id=$1 AND status IN ('PENDING','COMPLETED')`, [bookingId])).rows[0];
+        const alreadyRefunded = Number(allocated.amount);
+        const paidAmount = Math.max(0, Number(booking.paid_amount || 0) - alreadyRefunded);
         const calc = primaryCourt
           ? calculateRefundPolicy(booking.cancellation_rules, primaryCourt.start_at, paidAmount)
           : { hoursBefore: 0, refundPercent: 0, refundableAmount: 0, forfeitedAmount: paidAmount };
         refundSummary = calc;
 
-        let refundStatus = 'NONE';
+        let refundStatus = alreadyRefunded > 0 ? booking.refund_status : 'NONE';
         if (paidAmount > 0) {
           if (calc.refundableAmount > 0) {
             refundStatus = 'PENDING';
@@ -1432,7 +1439,7 @@ customerRouter.post('/bookings/:id/cancel', requirePortal('customer'), async (re
               ]
             );
           } else {
-            refundStatus = 'FORFEITED';
+            refundStatus = alreadyRefunded > 0 ? booking.refund_status : 'FORFEITED';
           }
         }
 
@@ -1453,7 +1460,7 @@ customerRouter.post('/bookings/:id/cancel', requirePortal('customer'), async (re
                due_at_venue = 0,
                updated_at = NOW()
            WHERE id = $4`,
-          [reason, refundStatus, calc.refundableAmount, bookingId]
+          [reason, refundStatus, alreadyRefunded + calc.refundableAmount, bookingId]
         );
 
         await client.query('COMMIT');
