@@ -108,8 +108,6 @@ export async function serveMapTile(req: Request, res: Response) {
     // Fall through to SVG fallback
   }
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" fill="#eef1f5"/><path d="M0 128h256M128 0v256" stroke="#dde3ea" stroke-width="1"/></svg>`;
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=60');
-  return res.send(svg);
+  res.setHeader('Cache-Control', 'no-store');
+  return res.status(503).json({ error_code: 'MAP_TILES_UNAVAILABLE' });
 }
